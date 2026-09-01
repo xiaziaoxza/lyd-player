@@ -32,7 +32,7 @@ public class LocalProxyServer {
     }
 
     private final Context context;
-    private final Listener listener;
+    private Listener listener;
     private ServerSocket serverSocket;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -53,6 +53,10 @@ public class LocalProxyServer {
 
     public boolean isRunning() {
         return running.get();
+    }
+
+    public void setListener(Listener l) {
+        this.listener = l;
     }
 
     public void start() throws Exception {
@@ -271,6 +275,13 @@ public class LocalProxyServer {
     /** 双向转发。inspectHost 非空时在 a->b 方向扫描明文，检测 m3u8 请求。 */
     private void relay(final Socket a, final Socket b, final String inspectHost) {
         final boolean inspect = inspectHost != null;
+        final AtomicBoolean closed = new AtomicBoolean(false);
+        final Runnable closeBoth = () -> {
+            if (closed.compareAndSet(false, true)) {
+                closeQuietly(a);
+                closeQuietly(b);
+            }
+        };
         Thread t1 = new Thread(() -> {
             try {
                 InputStream in = a.getInputStream();
@@ -288,7 +299,7 @@ public class LocalProxyServer {
                 }
             } catch (Exception ignored) {
             } finally {
-                closeQuietly(b);
+                closeBoth.run();
             }
         });
         Thread t2 = new Thread(() -> {
@@ -303,7 +314,7 @@ public class LocalProxyServer {
                 }
             } catch (Exception ignored) {
             } finally {
-                closeQuietly(a);
+                closeBoth.run();
             }
         });
         t1.setDaemon(true);

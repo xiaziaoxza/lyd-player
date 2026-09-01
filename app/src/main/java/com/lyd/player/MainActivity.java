@@ -15,6 +15,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 
 public class MainActivity extends AppCompatActivity implements LocalProxyServer.Listener {
+    private static LocalProxyServer staticProxy = null;
     private LocalProxyServer proxy;
     private TextView statusText;
     private TextView logText;
@@ -40,7 +41,12 @@ public class MainActivity extends AppCompatActivity implements LocalProxyServer.
         logText = findViewById(R.id.log_text);
         toggleButton = findViewById(R.id.toggle_button);
 
-        proxy = new LocalProxyServer(this, this);
+        if (staticProxy == null) {
+            staticProxy = new LocalProxyServer(getApplicationContext(), this);
+        } else {
+            staticProxy.setListener(this);
+        }
+        proxy = staticProxy;
 
         toggleButton.setOnClickListener(v -> {
             if (proxy.isRunning()) {
@@ -89,7 +95,7 @@ public class MainActivity extends AppCompatActivity implements LocalProxyServer.
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (proxy != null) {
+        if (isFinishing() && proxy != null) {
             proxy.stop();
         }
     }
