@@ -36,8 +36,13 @@ public class LocalProxyServer {
         void onLog(String msg);
     }
 
+    public interface LogSink {
+        void onLog(String msg);
+    }
+
     private final Context context;
     private Listener listener;
+    private volatile LogSink logSink;
     private ServerSocket serverSocket;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -62,6 +67,10 @@ public class LocalProxyServer {
 
     public void setListener(Listener l) {
         this.listener = l;
+    }
+
+    public void setLogSink(LogSink sink) {
+        this.logSink = sink;
     }
 
     public void start() throws Exception {
@@ -106,6 +115,9 @@ public class LocalProxyServer {
 
     private void log(String msg) {
         Log.i(TAG, msg);
+        if (logSink != null) {
+            logSink.onLog(msg);
+        }
         if (listener != null) {
             listener.onLog(msg);
         }

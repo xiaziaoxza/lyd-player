@@ -1,6 +1,7 @@
 package com.lyd.player;
 
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.TextView;
@@ -14,9 +15,7 @@ import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 
-public class MainActivity extends AppCompatActivity implements LocalProxyServer.Listener {
-    private static LocalProxyServer staticProxy = null;
-    private LocalProxyServer proxy;
+public class MainActivity extends AppCompatActivity implements LocalProxyServer.LogSink {
     private TextView statusText;
     private TextView logText;
     private Button toggleButton;
@@ -41,44 +40,67 @@ public class MainActivity extends AppCompatActivity implements LocalProxyServer.
         logText = findViewById(R.id.log_text);
         toggleButton = findViewById(R.id.toggle_button);
 
-        if (staticProxy == null) {
-            staticProxy = new LocalProxyServer(getApplicationContext(), this);
-        } else {
-            staticProxy.setListener(this);
-        }
-        proxy = staticProxy;
-
         toggleButton.setOnClickListener(v -> {
-            if (proxy.isRunning()) {
-                proxy.stop();
-                toggleButton.setText("启动代理");
-                statusText.setText("代理已停止");
+            if (isProxyRunning()) {
+                stopProxy();
             } else {
                 startProxy();
             }
         });
 
-        startProxy();
-    }
-
-    private void startProxy() {
-        try {
-            proxy.start();
-            toggleButton.setText("停止代理");
-            statusText.setText("代理运行中 127.0.0.1:" + LocalProxyServer.PORT);
-        } catch (Exception e) {
-            Toast.makeText(this, "启动失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        // 已在前台服务中运行则同步状态
+        if (isProxyRunning()) {
+            onProxyStarted();
         }
     }
 
     @Override
-    public void onM3u8(final String url) {
-        runOnUiThread(() -> {
-            statusText.setText("已抓到 m3u8，正在播放...");
-            Intent i = new Intent(MainActivity.this, PlayerActivity.class);
-            i.putExtra(PlayerActivity.EXTRA_URL, url);
-            startActivity(i);
-        });
+    protected void onResume() {
+        super.onResume();
+        ProxyService.setUiLogSink(this);
+        refreshLastUrl();
+        if (isProxyRunning()) {
+            onProxyStarted();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        ProxyService.setUiLogSink(null);
+    }
+
+    private boolean isProxyRunning() {
+        LocalProxyServer p = ProxyService.getProxy();
+        return p != null && p.isRunning();
+    }
+
+    private void startProxy() {
+        Intent i = new Intent(this, ProxyService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(i);
+        } else {
+            startService(i);
+        }
+        onProxyStarted();
+    }
+
+    private void stopProxy() {
+        stopService(new Intent(this, ProxyService.class));
+        toggleButton.setText("启动代理");
+        statusText.setText("代理已停止");
+    }
+
+    private void onProxyStarted() {
+        toggleButton.setText("停止代理");
+        statusText.setText("代理运行中 127.0.0.1:" + LocalProxyServer.PORT);
+    }
+
+    private void refreshLastUrl() {
+        String url = ProxyService.getLastM3u8();
+        if (url != null) {
+            statusText.setText("已抓到 m3u8，点通知或重进播放");
+        }
     }
 
     @Override
@@ -92,11 +114,7 @@ public class MainActivity extends AppCompatActivity implements LocalProxyServer.
         });
     }
 
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        if (isFinishing() && proxy != null) {
-            proxy.stop();
-        }
+    private void toast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_LONG).show();
     }
 }
