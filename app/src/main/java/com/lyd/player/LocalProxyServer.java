@@ -209,7 +209,13 @@ public class LocalProxyServer {
 
             relay(clientSsl, serverSsl, host);
         } catch (Exception e) {
-            log("透明TLS error " + ": " + e);
+            StringBuilder sb = new StringBuilder("透明TLS error: " + e);
+            Throwable c = e;
+            while (c.getCause() != null && c.getCause() != c) {
+                c = c.getCause();
+                sb.append(" <- ").append(c.getClass().getSimpleName()).append(": ").append(c.getMessage());
+            }
+            log(sb.toString());
         } finally {
             closeQuietly(clientSsl);
             closeQuietly(serverSsl);
