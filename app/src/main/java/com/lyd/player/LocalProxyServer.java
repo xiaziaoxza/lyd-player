@@ -10,6 +10,7 @@ import java.io.EOFException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PushbackInputStream;
+import java.lang.reflect.Method;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -18,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 
 /**
  * 本地 HTTP 代理：监听 127.0.0.1:8080。
@@ -184,8 +186,7 @@ public class LocalProxyServer {
             log("透明TLS MITM: " + host);
 
             SSLContext serverCtx = SelfSignedCert.getServerContext(context);
-            clientSsl = (SSLSocket) serverCtx.getSocketFactory().createSocket(
-                    client, new ByteArrayInputStream(clientHello), true);
+            clientSsl = wrapServerSsl(serverCtx.getSocketFactory(), client, clientHello);
             clientSsl.setUseClientMode(false);
             clientSsl.setSoTimeout(60000);
             clientSsl.startHandshake();
@@ -202,6 +203,14 @@ public class LocalProxyServer {
             closeQuietly(serverSsl);
             closeQuietly(client);
         }
+    }
+
+    /** createSocket(Socket, InputStream consumed, boolean) 是 protected，反射调用。 */
+    private SSLSocket wrapServerSsl(SSLSocketFactory factory, Socket client, byte[] clientHello) throws Exception {
+        Method m = SSLSocketFactory.class.getDeclaredMethod(
+                "createSocket", Socket.class, InputStream.class, boolean.class);
+        m.setAccessible(true);
+        return (SSLSocket) m.invoke(factory, client, new ByteArrayInputStream(clientHello), true);
     }
 
     private void readFully(InputStream in, byte[] buf) throws Exception {
