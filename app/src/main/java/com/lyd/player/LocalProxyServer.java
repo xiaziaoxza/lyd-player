@@ -3,10 +3,13 @@ package com.lyd.player;
 import android.content.Context;
 import android.util.Log;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
+import java.io.EOFException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PushbackInputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -109,7 +112,19 @@ public class LocalProxyServer {
     private void handleClient(Socket client) {
         try {
             client.setSoTimeout(60000);
-            String header = readHeader(client.getInputStream());
+            PushbackInputStream pin = new PushbackInputStream(client.getInputStream(), 64);
+            int first = pin.read();
+            if (first == -1) {
+                closeQuietly(client);
+                return;
+            }
+            // TLS ClientHello (0x16) -> 透明 TLS MITM；否则是 HTTP（CONNECT / 明文 GET）
+            if (first == 0x16) {
+                handleTransparentTls(client, pin, first);
+                return;
+            }
+            pin.unread(first);
+            String header = readHeader(pin);
             if (header == null || header.isEmpty()) {
                 closeQuietly(client);
                 return;
@@ -136,6 +151,135 @@ public class LocalProxyServer {
         } catch (Exception e) {
             log("handle error: " + e);
             closeQuietly(client);
+        }
+    }
+
+    /** 透明 TLS MITM：客户端直连 443（被 hook 重定向到本代理），发 TLS ClientHello。解析 SNI 拿域名。 */
+    private void handleTransparentTls(Socket client, PushbackInputStream pin, int first) {
+        SSLSocket clientSsl = null;
+        SSLSocket serverSsl = null;
+        try {
+            // 读完整 ClientHello record
+            ByteArrayOutputStream ch = new ByteArrayOutputStream();
+            ch.write(first);
+            byte[] hdr = new byte[4];
+            readFully(pin, hdr);
+            ch.write(hdr);
+            int recLen = ((hdr[2] & 0xFF) << 8) | (hdr[3] & 0xFF);
+            if (recLen <= 0 || recLen > 65535) {
+                closeQuietly(client);
+                return;
+            }
+            byte[] body = new byte[recLen];
+            readFully(pin, body);
+            ch.write(body);
+            byte[] clientHello = ch.toByteArray();
+
+            String host = parseSni(clientHello);
+            if (host == null || host.isEmpty()) {
+                log("透明TLS: 无 SNI，关闭");
+                closeQuietly(client);
+                return;
+            }
+            log("透明TLS MITM: " + host);
+
+            SSLContext serverCtx = SelfSignedCert.getServerContext(context);
+            clientSsl = (SSLSocket) serverCtx.getSocketFactory().createSocket(
+                    client, new ByteArrayInputStream(clientHello), true);
+            clientSsl.setUseClientMode(false);
+            clientSsl.setSoTimeout(60000);
+            clientSsl.startHandshake();
+
+            serverSsl = (SSLSocket) TrustAll.getContext().getSocketFactory().createSocket(host, 443);
+            serverSsl.setSoTimeout(60000);
+            serverSsl.startHandshake();
+
+            relay(clientSsl, serverSsl, host);
+        } catch (Exception e) {
+            log("透明TLS error " + ": " + e);
+        } finally {
+            closeQuietly(clientSsl);
+            closeQuietly(serverSsl);
+            closeQuietly(client);
+        }
+    }
+
+    private void readFully(InputStream in, byte[] buf) throws Exception {
+        int off = 0;
+        while (off < buf.length) {
+            int n = in.read(buf, off, buf.length - off);
+            if (n == -1) {
+                throw new EOFException("unexpected eof");
+            }
+            off += n;
+        }
+    }
+
+    /** 从 ClientHello record 解析 SNI 域名（TLS 1.2/1.3 兼容）。 */
+    private String parseSni(byte[] ch) {
+        int len = ch.length;
+        try {
+            if (len < 6) {
+                return null;
+            }
+            int pos = 5; // 跳过 record header: type(1)+ver(2)+len(2)
+            if (pos + 4 > len) {
+                return null;
+            }
+            int hsType = ch[pos] & 0xFF;
+            if (hsType != 0x01) { // 非 ClientHello
+                return null;
+            }
+            pos += 4; // 跳过 handshake type(1)+len(3)
+            if (pos + 2 + 32 + 1 > len) {
+                return null;
+            }
+            pos += 2; // client version
+            pos += 32; // random
+            int sidLen = ch[pos] & 0xFF;
+            pos += 1 + sidLen;
+            if (pos + 2 > len) {
+                return null;
+            }
+            int csLen = ((ch[pos] & 0xFF) << 8) | (ch[pos + 1] & 0xFF);
+            pos += 2 + csLen;
+            if (pos + 1 > len) {
+                return null;
+            }
+            int compLen = ch[pos] & 0xFF;
+            pos += 1 + compLen;
+            if (pos + 2 > len) {
+                return null;
+            }
+            int extLen = ((ch[pos] & 0xFF) << 8) | (ch[pos + 1] & 0xFF);
+            pos += 2;
+            int extEnd = Math.min(pos + extLen, len);
+            while (pos + 4 <= extEnd) {
+                int type = ((ch[pos] & 0xFF) << 8) | (ch[pos + 1] & 0xFF);
+                int elen = ((ch[pos + 2] & 0xFF) << 8) | (ch[pos + 3] & 0xFF);
+                pos += 4;
+                if (type == 0x0000) { // SNI
+                    if (pos + 2 > len) {
+                        return null;
+                    }
+                    int listLen = ((ch[pos] & 0xFF) << 8) | (ch[pos + 1] & 0xFF);
+                    int p = pos + 2;
+                    int listEnd = p + listLen;
+                    if (p + 3 <= listEnd && p + 3 <= len) {
+                        int nameType = ch[p] & 0xFF;
+                        int nameLen = ((ch[p + 1] & 0xFF) << 8) | (ch[p + 2] & 0xFF);
+                        p += 3;
+                        if (nameType == 0 && p + nameLen <= len) {
+                            return new String(ch, p, nameLen, "US-ASCII");
+                        }
+                    }
+                    return null;
+                }
+                pos += elen;
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
         }
     }
 
