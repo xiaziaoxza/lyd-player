@@ -115,6 +115,7 @@ public class LocalProxyServer {
                 return;
             }
             String firstLine = header.split("\r\n")[0];
+            log("REQ: " + firstLine);
             String[] parts = firstLine.split(" ");
             if (parts.length < 2) {
                 closeQuietly(client);
@@ -177,8 +178,9 @@ public class LocalProxyServer {
             closeQuietly(client);
             return;
         }
-        if (isApiHost(host)) {
-            log("MITM: " + host + ":" + port);
+        boolean api = isApiHost(host);
+        log("CONNECT: " + host + ":" + port + " api=" + api);
+        if (api) {
             mitm(client, host, port);
         } else {
             tunnel(client, host, port);
