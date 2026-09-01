@@ -223,9 +223,12 @@ public class LocalProxyServer {
         }
     }
 
-    /** createSocket(Socket, InputStream consumed, boolean) 是 protected，反射调用。 */
+    /**
+     * 用客户端已发 ClientHello 包装服务器侧握手。方法在 AOSP 基类是 protected 且默认抛
+     * UnsupportedOperationException；Method.invoke 不做虚分派，必须取运行时类的覆写实现。
+     */
     private SSLSocket wrapServerSsl(SSLSocketFactory factory, Socket client, byte[] clientHello) throws Exception {
-        Method m = SSLSocketFactory.class.getDeclaredMethod(
+        Method m = factory.getClass().getMethod(
                 "createSocket", Socket.class, InputStream.class, boolean.class);
         m.setAccessible(true);
         return (SSLSocket) m.invoke(factory, client, new ByteArrayInputStream(clientHello), true);
