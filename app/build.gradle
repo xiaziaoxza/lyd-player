@@ -26,6 +26,12 @@ android {
     }
 }
 
+// kotlin 1.8 起 jdk7/jdk8 已合并进 kotlin-stdlib，排除旧的拆分模块避免重复类冲突
+configurations.configureEach {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+}
+
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.core:core:1.13.1'
